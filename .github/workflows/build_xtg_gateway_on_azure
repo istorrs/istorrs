@@ -1,0 +1,77 @@
+name: Build and Extract Artifacts
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs every day at midnight
+  push:
+    tags:
+      - '*'  # Trigger on new tag release
+    paths:
+      - '.github/workflows/build_release.yml'  # Trigger on changes to the workflow     
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: ConnectedDevelopment/xtg-gateway-wirepas
+        token: {{ secrets.XTG_CD_PAT }}
+        path: xtg-gateway-wirepas
+        ref: master # Specify the branch to check out       
+        submodules: true
+        ssh-strict: true
+        ssh-user: git
+        persist-credentials: true
+        clean: true
+        show-progress: true
+        lfs: false
+        set-safe-directory: true
+        
+    - name: Get repository SHA
+      id: get-sha
+      run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
+      working-directory: xtg-gateway-wirepas
+
+    - name: Set up SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.BUILD_IMAGE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed255519_github_jenkins
+        chmod 600 ~/.ssh/id_ed255519_github_jenkins
+        ssh-keyscan github.com >> ~/.ssh/known_hosts
+      shell: bash
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          apt-utils \
+          gawk wget git diffstat unzip texinfo gcc build-essential \
+          chrpath socat cpio python3 python3-pip python3-pexpect xz-utils \
+          debianutils iputils-ping python3-git python3-jinja2 libegl1-mesa \
+          libsdl1.2-dev pylint xterm python3-subunit mesa-common-dev zstd liblz4-tool \
+          git-core gcc-multilib xz-utils xterm \
+          git-lfs python3-git python3-jinja2 libegl1-mesa tzdata locales nano \
+          zstd xxd sudo
+      shell: bash
+
+    - name: Build project
+      run: |
+        cd xtg-gateway-wirepas
+        make build
+      shell: bash
+
+    - name: Find .wic files
+      run: |
+        mkdir -p artifacts
+        find xtg-gateway-wirepas/tmp/deploy -name '*.wic' -exec cp {} artifacts/ \;
+      shell: bash
+
+    - name: Upload .wic files
+      uses: actions/upload-artifact@v4
+      with:
+        name: wic-files-${{ steps.get-sha.outputs.sha }}
+        path: artifacts/*.wic
