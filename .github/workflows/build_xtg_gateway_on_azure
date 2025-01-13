@@ -2,24 +2,23 @@ name: Build and Extract Artifacts
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Runs every day at midnight
+     - cron: '0 0 * * *' # Runs every day at midnight
   push:
     tags:
       - '*'  # Trigger on new tag release
     paths:
       - '.github/workflows/build_release.yml'  # Trigger on changes to the workflow     
   workflow_dispatch:  # Allow manual triggering
-
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         repository: ConnectedDevelopment/xtg-gateway-wirepas
-        token: {{ secrets.XTG_CD_PAT }}
+        token: ${{ secrets.XTG_CD_PAT }}
         path: xtg-gateway-wirepas
         ref: master # Specify the branch to check out       
         submodules: true
@@ -36,39 +35,209 @@ jobs:
       run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
       working-directory: xtg-gateway-wirepas
 
-    - name: Set up SSH key
+    - name: Create Dockerfile
       run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.BUILD_IMAGE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed255519_github_jenkins
-        chmod 600 ~/.ssh/id_ed255519_github_jenkins
-        ssh-keyscan github.com >> ~/.ssh/known_hosts
-      shell: bash
+        cat <<EOF > Dockerfile
+          FROM crops/poky:latest
+          
+          ENV DEBIAN_FRONTEND=noninteractive
+          
+          USER root
+          
+          RUN apt-get update && apt-get install -y \
+              apt-utils \
+              gawk wget git-core diffstat unzip texinfo gcc-multilib \
+              build-essential chrpath socat cpio python3 python3-pip python3-pexpect \
+              xz-utils debianutils iputils-ping libsdl1.2-dev xterm \
+              git-lfs python3-git python3-jinja2 libegl1-mesa pylint3 tzdata locales nano \
+              zstd xxd sudo
+          
+          # Create pokyuser and set permissions
+          RUN groupadd -g 1000 pokygroup && \
+              useradd -u 1000 -g pokygroup -m -s /bin/bash pokyuser && \
+              echo "pokyuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          
+          
+          # Install required packages
+          RUN apt-get update && apt-get install -y \
+              git \
+              openssh-client
+          
+          # Create the .ssh directory
+          RUN mkdir -p /home/pokyuser/.ssh/
+          
+          # Copy your SSH private key and known_hosts file into the image
+          # Make sure you have the id_rsa and known_hosts files in the same directory as your Dockerfile
+          COPY id_ed255519_github_jenkins /home/pokyuser/.ssh/id_ed255519_github_jenkins
+          COPY known_hosts /home/pokyuser/.ssh/known_hosts
+          COPY config /home/pokyuser/.ssh/config
+          # Set permissions for the SSH key
+          RUN chmod 600 /home/pokyuser/.ssh/id_ed255519_github_jenkins
+          RUN chmod 644 /home/pokyuser/.ssh/known_hosts
+          
+          
+          
+          # Set the environment variable for Git to use SSH
+          ENV GIT_SSH_COMMAND="ssh -i /home/pokyuser/.ssh/id_ed255519_github_jenkins -o UserKnownHostsFile=/home/pokyuser/.ssh/known_hosts"
+          
+          # Add your repository's SSH key to the known hosts
+          RUN ssh-keyscan github.com >> /home/pokyuser/.ssh/known_hosts
+          
+          RUN chown 1000:1000 /home/pokyuser/.ssh
+          RUN chown 1000:1000 /home/pokyuser/.ssh/id_ed255519_github_jenkins
+          RUN chown 1000:1000 /home/pokyuser/.ssh/known_hosts
+          RUN chown 1000:1000 /home/pokyuser/.ssh/config
+          
+          # Copy the entrypoint script
+          COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+          RUN chmod +x /usr/local/bin/entrypoint.sh
+          
+          #ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+          
+          USER pokyuser
+        EOF
 
-    - name: Install dependencies
+    - name: Create entrypoint.sh
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          apt-utils \
-          gawk wget git diffstat unzip texinfo gcc build-essential \
-          chrpath socat cpio python3 python3-pip python3-pexpect xz-utils \
-          debianutils iputils-ping python3-git python3-jinja2 libegl1-mesa \
-          libsdl1.2-dev pylint xterm python3-subunit mesa-common-dev zstd liblz4-tool \
-          git-core gcc-multilib xz-utils xterm \
-          git-lfs python3-git python3-jinja2 libegl1-mesa tzdata locales nano \
-          zstd xxd sudo
-      shell: bash
+        cat <<EOF > entrypoint.sh
+        #!/bin/bash
+        chown -R pokyuser:pokygroup /workspace
+        exec /bin/bash
+        EOF
 
-    - name: Build project
-      run: |
-        cd xtg-gateway-wirepas
-        make build
-      shell: bash
+    - name: Build Docker image
+      run: docker build -t gatex-poky-image .
+
+    - name: Run Docker container and build
+      run: docker run -v ${{ github.workspace }}/xtg-gateway-wirepas:/workspace -w /workspace gatex-poky-image /bin/bash -c "make build"
 
     - name: Find .wic files
       run: |
         mkdir -p artifacts
-        find xtg-gateway-wirepas/tmp/deploy -name '*.wic' -exec cp {} artifacts/ \;
-      shell: bash
+        find ${{ github.workspace }}/xtg-gateway-wirepas/tmp/deploy -name '*.wic' -exec cp {} artifacts/ \;
+
+    - name: Upload .wic files
+      uses: actions/upload-artifact@v4
+      with:
+        name: wic-files-${{ steps.get-sha.outputs.sha }}
+        path: artifacts/*.wic
+name: Build and Extract Artifacts
+
+on:
+  schedule:
+     - cron: '0 0 * * *' # Runs every day at midnight
+  push:
+    tags:
+      - '*'  # Trigger on new tag release
+    paths:
+      - '.github/workflows/build_release.yml'  # Trigger on changes to the workflow     
+  workflow_dispatch:  # Allow manual triggering
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: ConnectedDevelopment/xtg-gateway-wirepas
+        token: ${{ secrets.XTG_CD_PAT }}
+        path: xtg-gateway-wirepas
+        ref: master # Specify the branch to check out       
+        submodules: true
+        ssh-strict: true
+        ssh-user: git
+        persist-credentials: true
+        clean: true
+        show-progress: true
+        lfs: false
+        set-safe-directory: true
+        
+    - name: Get repository SHA
+      id: get-sha
+      run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
+      working-directory: xtg-gateway-wirepas
+
+    - name: Create Dockerfile
+      run: |
+        cat <<EOF > Dockerfile
+          FROM crops/poky:latest
+          
+          ENV DEBIAN_FRONTEND=noninteractive
+          
+          USER root
+          
+          RUN apt-get update && apt-get install -y \
+              apt-utils \
+              gawk wget git-core diffstat unzip texinfo gcc-multilib \
+              build-essential chrpath socat cpio python3 python3-pip python3-pexpect \
+              xz-utils debianutils iputils-ping libsdl1.2-dev xterm \
+              git-lfs python3-git python3-jinja2 libegl1-mesa pylint3 tzdata locales nano \
+              zstd xxd sudo
+          
+          # Create pokyuser and set permissions
+          RUN groupadd -g 1000 pokygroup && \
+              useradd -u 1000 -g pokygroup -m -s /bin/bash pokyuser && \
+              echo "pokyuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          
+          
+          # Install required packages
+          RUN apt-get update && apt-get install -y \
+              git \
+              openssh-client
+          
+          # Create the .ssh directory
+          RUN mkdir -p /home/pokyuser/.ssh/
+          
+          # Copy your SSH private key and known_hosts file into the image
+          # Make sure you have the id_rsa and known_hosts files in the same directory as your Dockerfile
+          COPY id_ed255519_github_jenkins /home/pokyuser/.ssh/id_ed255519_github_jenkins
+          COPY known_hosts /home/pokyuser/.ssh/known_hosts
+          COPY config /home/pokyuser/.ssh/config
+          # Set permissions for the SSH key
+          RUN chmod 600 /home/pokyuser/.ssh/id_ed255519_github_jenkins
+          RUN chmod 644 /home/pokyuser/.ssh/known_hosts
+          
+          
+          
+          # Set the environment variable for Git to use SSH
+          ENV GIT_SSH_COMMAND="ssh -i /home/pokyuser/.ssh/id_ed255519_github_jenkins -o UserKnownHostsFile=/home/pokyuser/.ssh/known_hosts"
+          
+          # Add your repository's SSH key to the known hosts
+          RUN ssh-keyscan github.com >> /home/pokyuser/.ssh/known_hosts
+          
+          RUN chown 1000:1000 /home/pokyuser/.ssh
+          RUN chown 1000:1000 /home/pokyuser/.ssh/id_ed255519_github_jenkins
+          RUN chown 1000:1000 /home/pokyuser/.ssh/known_hosts
+          RUN chown 1000:1000 /home/pokyuser/.ssh/config
+          
+          # Copy the entrypoint script
+          COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+          RUN chmod +x /usr/local/bin/entrypoint.sh
+          
+          #ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+          
+          USER pokyuser
+        EOF
+
+    - name: Create entrypoint.sh
+      run: |
+        cat <<EOF > entrypoint.sh
+        #!/bin/bash
+        chown -R pokyuser:pokygroup /workspace
+        exec /bin/bash
+        EOF
+
+    - name: Build Docker image
+      run: docker build -t gatex-poky-image .
+
+    - name: Run Docker container and build
+      run: docker run -v ${{ github.workspace }}/xtg-gateway-wirepas:/workspace -w /workspace gatex-poky-image /bin/bash -c "make build"
+
+    - name: Find .wic files
+      run: |
+        mkdir -p artifacts
+        find ${{ github.workspace }}/xtg-gateway-wirepas/tmp/deploy -name '*.wic' -exec cp {} artifacts/ \;
 
     - name: Upload .wic files
       uses: actions/upload-artifact@v4
