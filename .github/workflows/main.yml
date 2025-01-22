@@ -69,7 +69,7 @@ jobs:
           # Copy your SSH private key and known_hosts file into the image
           # Make sure you have the id_rsa and known_hosts files in the same directory as your Dockerfile
           COPY id_ed255519_github_jenkins /home/pokyuser/.ssh/id_ed255519_github_jenkins
-          COPY known_hosts /home/pokyuser/.ssh/known_hosts
+          # COPY known_hosts /home/pokyuser/.ssh/known_hosts
           # COPY config /home/pokyuser/.ssh/config
           # Set permissions for the SSH key
           RUN chmod 600 /home/pokyuser/.ssh/id_ed255519_github_jenkins
