@@ -35,6 +35,9 @@ jobs:
       run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
       working-directory: xtg-gateway-wirepas
 
+    - name: Copy GITHUB private key to a place that the docker can reach
+      run: cp /home/ian/work/actions-runner/id_ed255519_github_jenkins xtg-gateway-wirepas/id_ed255519_github_jenkins
+
     - name: Create Dockerfile
       run: |
         cat <<EOF > Dockerfile
